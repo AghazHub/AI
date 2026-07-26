@@ -1,0 +1,29 @@
+# ==============================
+# Resume Parser Dependencies
+# ==============================
+
+# --- PDF Processing ---
+PyMuPDF>=1.25.0              # PDF text extraction, layout analysis, hybrid OCR
+
+# --- DOCX Processing ---
+python-docx>=1.1.0           # Microsoft Word document parsing
+
+# --- Image Processing ---
+Pillow>=11.0.0               # Image loading and preprocessing
+pdf2image>=1.17.0            # Convert PDF pages to images (for OCR pipeline)
+
+# --- OCR ---
+pytesseract>=0.3.13          # Tesseract OCR wrapper for scanned documents
+
+# --- Image Preprocessing ---
+opencv-python>=4.10.0        # Image deskew, binarization, DPI upscaling
+
+# --- File Type Detection (optional, one of: python-magic OR filetype) ---
+python-magic>=0.4.27         # MIME type detection via libmagic (more accurate)
+# filetype>=1.2.0            # Lighter alternative for MIME detection (no native deps)
+
+# --- Data Validation ---
+pydantic>=2.10.0             # Schema validation for JSON output
+
+# --- HTTP (for LLM API calls in section.py) ---
+httpx>=0.28.0                # Async HTTP client for Groq/Cerebras/Mistral APIs
