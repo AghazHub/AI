@@ -346,11 +346,18 @@ with tabs[0]:
     )
 
     if uploaded_file is not None:
-        # Save to a temp file
+        # Clean up previous temp file before creating a new one
+        old_temp = st.session_state.pop("_temp_file_path", None)
+        if old_temp:
+            Path(old_temp).unlink(missing_ok=True)
+
+        # Save to a temp file (keep it alive for downstream tabs)
         suffix = Path(uploaded_file.name).suffix or ".tmp"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
             tmp.write(uploaded_file.getbuffer())
             tmp_path = tmp.name
+
+        st.session_state["_temp_file_path"] = tmp_path
 
         with st.spinner("Analyzing file…"):
             result = process_upload(tmp_path, original_filename=uploaded_file.name)
@@ -397,8 +404,9 @@ with tabs[0]:
                     "Proceed to the **🔍 OCR** tab (once implemented)."
                 )
 
-        # Cleanup temp file
-        Path(tmp_path).unlink(missing_ok=True)
+        # NOTE: Temp file is NOT deleted here — downstream tabs (extraction)
+        # need the file to still exist. It will be cleaned up when a new file
+        # is uploaded, or when the session ends.
     else:
         st.info(
             "👆 Upload a resume file above to see the type detection in action.\n\n"
