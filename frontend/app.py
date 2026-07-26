@@ -21,7 +21,8 @@ from ResumeParser.resume_ingestion import FileType, process_upload, UploadResult
 from ResumeParser.extraction import extract_text
 from ResumeParser.OCR import ocr_document
 from ResumeParser.layout import detect_layout
-from ResumeParser.models import BlockType, Document
+from ResumeParser.section import parse_sections
+from ResumeParser.models import BlockType, Document, SectionType
 
 # ══════════════════════════════════════════════════════════════════════
 # Page config
@@ -860,26 +861,194 @@ with tabs[3]:
                         st.caption(f"… and {len(all_sorted) - 30} more ordered blocks")
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 5 – Section Parsing  (placeholder)
+# TAB 5 – Section Parsing  (fully functional)
 # ══════════════════════════════════════════════════════════════════════
 
 with tabs[4]:
     st.markdown("### 📋 Section Parsing")
-    _placeholder_tab(
-        title="Section Parsing & Field Extraction",
-        description="The final stage: identifies resume sections (Education, Experience, "
-                    "Skills, etc.) and extracts structured fields. Uses regex for "
-                    "deterministic fields and an LLM (Groq/Cerebras/Mistral) for "
-                    "semantically rich sections.",
-        features=[
-            "🏷️ **Section detection** — regex patterns for known headers + LLM fallback",
-            "📋 **Pydantic models** — structured `ExperienceItem`, `EducationItem`, etc.",
-            "🤖 **LLM integration** — per-section prompts via Groq / Cerebras / Mistral APIs",
-            "✅ **Validation** — date normalization, GPA parsing, deduplication",
-            "📦 **Final JSON output** — clean, validated, ready for storage",
-        ],
-        filename_hint="section.py",
+    st.markdown(
+        "Identifies resume sections and extracts structured fields using an LLM "
+        "(Groq, OpenAI, Anthropic, Cerebras, Mistral) when an API key is provided. "
+        "Falls back to regex-based extraction when no key is available."
     )
+
+    doc = (st.session_state.get("layout_result")
+           or st.session_state.get("extraction_result")
+           or st.session_state.get("ocr_result"))
+    upload = st.session_state.get("upload_result")
+
+    if upload is None:
+        st.info(
+            "👆 Start by uploading and processing a file through the pipeline first.",
+            icon="💡",
+        )
+    elif doc is None:
+        st.info(
+            "Run **📖 Text Extraction** (or **🔍 OCR**) first, then optionally "
+            "**📐 Layout Analysis** for better section detection.",
+            icon="💡",
+        )
+    elif doc.error:
+        st.error(f"Upstream error: **{doc.error}**")
+    else:
+        st.markdown(f"**Blocks available:** {doc.total_blocks} across {len(doc.pages)} pages")
+
+        # ── LLM configuration (optional) ─────────────────────────
+        with st.expander("🤖 LLM Configuration (optional)", expanded=False):
+            llm_api_key = st.text_input(
+                "API Key",
+                type="password",
+                help="Leave empty for regex-only parsing. Keys are auto-detected:\n"
+                    "• ``gsk_…`` → Groq\n"
+                    "• ``sk-…`` → OpenAI\n"
+                    "• ``sk-ant-…`` → Anthropic\n"
+                    "• ``csk-…`` → Cerebras",
+            )
+
+            # Provider dropdown
+            provider_options = [
+                ("auto", "🔍 Auto-detect"),
+                ("groq", "⚡ Groq"),
+                ("openai", "🤖 OpenAI"),
+                ("anthropic", "🌲 Anthropic"),
+                ("cerebras", "🧠 Cerebras"),
+                ("mistral", "🌬️ Mistral"),
+                ("custom", "⚙️ Custom"),
+            ]
+            llm_provider = st.selectbox(
+                "Provider",
+                options=[p[0] for p in provider_options],
+                format_func=lambda x: dict(provider_options)[x],
+                index=0,
+            )
+
+            # Default values per provider — keep in sync with section.py _PROVIDERS
+            # NOTE: ``auto`` defaults are intentionally empty — the provider is
+            # resolved from the API key prefix, and passing a fixed endpoint/model
+            # would override the auto-detected provider's correct values.
+            _defaults = {
+                "auto":    ("", ""),
+                "groq":    ("https://api.groq.com/openai/v1/chat/completions", "llama-3.1-8b-instant"),
+                "openai":  ("https://api.openai.com/v1/chat/completions", "gpt-4o-mini"),
+                "anthropic": ("https://api.anthropic.com/v1/messages", "claude-3-haiku-20240307"),
+                "cerebras": ("https://api.cerebras.ai/v1/chat/completions", "llama3.1-8b"),
+                "mistral": ("https://api.mistral.ai/v1/chat/completions", "mistral-small-latest"),
+                "custom":  ("", ""),
+            }
+
+            def_endpoint, def_model = _defaults.get(llm_provider, _defaults["auto"])
+
+            llm_endpoint = st.text_input(
+                "API Endpoint",
+                value=def_endpoint,
+                help="Override the provider's default endpoint. Required for Custom provider.",
+            )
+            llm_model = st.text_input(
+                "Model",
+                value=def_model,
+                help="Override the provider's default model.",
+            )
+
+        parse_btn = st.button(
+            "📋 Parse Sections" + (" (with LLM)" if llm_api_key else " (regex only)"),
+            type="primary",
+            use_container_width=True,
+        )
+
+        if parse_btn or "section_result" in st.session_state:
+            if parse_btn:
+                with st.spinner("Parsing sections…" + (" (calling LLM…)" if llm_api_key else "")):
+                    result = parse_sections(
+                        doc,
+                        llm_api_key=llm_api_key or None,
+                        llm_provider=llm_provider if llm_provider != "auto" else None,
+                        llm_endpoint=llm_endpoint or None,
+                        llm_model=llm_model or None,
+                    )
+                    st.session_state["section_result"] = result
+            else:
+                result = st.session_state["section_result"]
+
+            if result.error:
+                st.error(f"**{result.error}**")
+            else:
+                # ── Pipeline ────────────────────────────────────
+                st.divider()
+                st.markdown("### 🔄 Pipeline Position")
+                _render_pipeline(4)
+
+                # ── Stats ───────────────────────────────────────
+                col1, col2, col3, col4 = st.columns(4)
+                _render_stat("Sections", f"{len(result.sections)}", col1)
+
+                has_llm = bool(result.parsed_resume
+                               and (result.parsed_resume.experience
+                                    or result.parsed_resume.education
+                                    or result.parsed_resume.skills))
+                _render_stat("LLM Fields", "✅" if has_llm else "—", col2)
+
+                contact = sum(1 for f in [result.parsed_resume.email,
+                                          result.parsed_resume.phone,
+                                          result.parsed_resume.linkedin]
+                              if f) if result.parsed_resume else 0
+                _render_stat("Contact Found", str(contact), col3)
+                _render_stat("Chars", f"{len(result.raw_text):,}", col4)
+
+                # ── Sections list ────────────────────────────────
+                st.divider()
+                c_sections, c_json = st.columns([1, 1])
+
+                with c_sections:
+                    st.markdown("#### 📑 Detected Sections")
+                    if not result.sections:
+                        st.caption("No sections detected via regex patterns.")
+                    else:
+                        for i, sec in enumerate(result.sections):
+                            icon = {
+                                SectionType.EDUCATION: "🎓",
+                                SectionType.EXPERIENCE: "💼",
+                                SectionType.SKILLS: "🔧",
+                                SectionType.SUMMARY: "📋",
+                                SectionType.PROJECTS: "🚀",
+                                SectionType.CERTIFICATIONS: "🏅",
+                                SectionType.LANGUAGES: "🌐",
+                                SectionType.PUBLICATIONS: "📝",
+                                SectionType.VOLUNTEERING: "🤝",
+                                SectionType.CUSTOM: "📌",
+                            }.get(sec.section_type, "📌")
+
+                            preview = sec.raw_text[:80].replace("\n", " | ")
+                            if len(sec.raw_text) > 80:
+                                preview += "…"
+
+                            with st.expander(
+                                f"{icon} {sec.heading}",
+                                expanded=i < 3,
+                            ):
+                                blk_info = f" · Blocks: {len(sec.blocks)}" if sec.blocks else ""
+                                st.caption(f"Type: `{sec.section_type.name}`{blk_info}")
+                                if sec.raw_text:
+                                    st.text(preview)
+                                else:
+                                    st.caption("_Identified by LLM_")
+                                
+
+                with c_json:
+                    st.markdown("#### 📦 Structured Output")
+                    if result.parsed_resume:
+                        from dataclasses import asdict
+                        import json
+                        output = json.dumps(
+                            asdict(result.parsed_resume),
+                            indent=2,
+                            default=str,
+                        )
+                        st.code(output, language="json", line_numbers=True)
+                    else:
+                        st.caption(
+                            "Provide an LLM API key above and re-run for "
+                            "structured field extraction."
+                        )
 
 # ══════════════════════════════════════════════════════════════════════
 # Footer

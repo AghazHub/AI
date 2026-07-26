@@ -248,6 +248,84 @@ class TextBlock:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# Section types (populated by the section-parsing stage)
+# ══════════════════════════════════════════════════════════════════════
+
+class SectionType(Enum):
+    """Known resume section categories."""
+    SUMMARY = auto()
+    EXPERIENCE = auto()
+    EDUCATION = auto()
+    SKILLS = auto()
+    PROJECTS = auto()
+    CERTIFICATIONS = auto()
+    LANGUAGES = auto()
+    PUBLICATIONS = auto()
+    VOLUNTEERING = auto()
+    CUSTOM = auto()  # Unrecognised section header
+
+
+@dataclass
+class ResumeSection:
+    """A single section identified within the resume."""
+    section_type: SectionType
+    heading: str
+    heading_bbox: Optional[BoundingBox] = None
+    blocks: list[TextBlock] = field(default_factory=list)
+    raw_text: str = ""
+    confidence: float = 1.0
+
+    def __post_init__(self) -> None:
+        if not self.raw_text:
+            self.raw_text = "\n".join(b.text for b in self.blocks)
+
+
+@dataclass
+class ExperienceItem:
+    """A single work experience entry."""
+    company: Optional[str] = None
+    role: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    description: list[str] = field(default_factory=list)
+    technologies: list[str] = field(default_factory=list)
+
+
+@dataclass
+class EducationItem:
+    """A single education entry."""
+    institution: Optional[str] = None
+    degree: Optional[str] = None
+    field: Optional[str] = None
+    graduation_date: Optional[str] = None
+    gpa: Optional[str] = None
+
+
+@dataclass
+class ProjectItem:
+    """A single project entry."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    technologies: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ParsedResume:
+    """Fully parsed resume with structured fields."""
+    name: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    linkedin: Optional[str] = None
+    github: Optional[str] = None
+    summary: Optional[str] = None
+    experience: list[ExperienceItem] = field(default_factory=list)
+    education: list[EducationItem] = field(default_factory=list)
+    skills: list[str] = field(default_factory=list)
+    certifications: list[str] = field(default_factory=list)
+    projects: list[ProjectItem] = field(default_factory=list)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # Container types
 # ══════════════════════════════════════════════════════════════════════
 
@@ -301,6 +379,12 @@ class Document:
 
     error: Optional[str] = None
     """Error message if processing failed at any stage."""
+
+    sections: list[ResumeSection] = field(default_factory=list)
+    """Identified sections, populated by the section-parsing stage."""
+
+    parsed_resume: Optional[ParsedResume] = None
+    """Fully parsed resume with structured fields, populated by the section-parsing stage."""
 
     @property
     def total_blocks(self) -> int:
