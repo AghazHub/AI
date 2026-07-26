@@ -18,7 +18,8 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from ResumeParser.resume_ingestion import FileType, process_upload, UploadResult
-from ResumeParser.extraction import extract_text, ExtractionResult
+from ResumeParser.extraction import extract_text
+from ResumeParser.models import BlockType, Document
 
 # ══════════════════════════════════════════════════════════════════════
 # Page config
@@ -466,19 +467,21 @@ with tabs[1]:
 
                 # ── Stats ───────────────────────────────────────
                 col1, col2, col3, col4 = st.columns(4)
-                _render_stat("Blocks", f"{len(result.blocks)}", col1)
+                all_blocks = [b for p in result.pages for b in p.blocks]
+                _render_stat("Blocks", f"{len(all_blocks)}", col1)
                 _render_stat("Characters", f"{len(result.raw_text):,}", col2)
-                _render_stat("Pages", str(result.page_count), col3)
+                _render_stat("Pages", str(len(result.pages)), col3)
 
-                # Count unique fonts
+                # Count unique fonts across all pages
                 fonts = set()
-                for b in result.blocks:
-                    for s in b.spans:
-                        if s.font_name:
-                            fonts.add(s.font_name)
+                for p in result.pages:
+                    for b in p.blocks:
+                        for s in b.spans:
+                            if s.font_name:
+                                fonts.add(s.font_name)
                 _render_stat("Fonts", str(len(fonts)) if fonts else "—", col4)
 
-                # ── Raw text preview ─────────────────────────────
+                # ── Raw text preview + blocks per page ───────────
                 st.divider()
                 c_preview, c_blocks = st.columns([3, 2])
 
@@ -492,19 +495,40 @@ with tabs[1]:
                         label_visibility="collapsed",
                     )
 
+                    # Per-page dimensions
+                    if len(result.pages) > 0:
+                        dims = [
+                            f"p{p.page_number}: {p.width:.0f}×{p.height:.0f}pt"
+                            for p in result.pages
+                        ]
+                        st.caption("Page dimensions: " + " · ".join(dims))
+
                 with c_blocks:
-                    st.markdown("#### 📦 Blocks")
-                    st.markdown(
-                        f"Showing first **{min(len(result.blocks), 30)}** "
-                        f"of **{len(result.blocks)}** blocks."
+                    st.markdown("#### 📦 Blocks by Page")
+                    page_to_show = st.selectbox(
+                        "Page",
+                        options=range(len(result.pages)),
+                        format_func=lambda i: f"Page {i} "
+                        f"({len(result.pages[i].blocks)} blocks)",
+                        label_visibility="collapsed",
                     )
 
-                    for i, block in enumerate(result.blocks[:30]):
-                        preview = block.text[:60]
-                        if len(block.text) > 60:
+                    page = result.pages[page_to_show]
+                    blocks_on_page = page.blocks
+
+                    st.markdown(
+                        f"Showing **{min(len(blocks_on_page), 30)}** "
+                        f"of **{len(blocks_on_page)}** blocks on page {page_to_show}."
+                    )
+
+                    for i, block in enumerate(blocks_on_page[:30]):
+                        preview = block.text[:55]
+                        if len(block.text) > 55:
                             preview += "…"
 
                         meta_parts = []
+                        if block.style_name:
+                            meta_parts.append(block.style_name)
                         if block.spans:
                             s = block.spans[0]
                             if s.font_name:
@@ -517,25 +541,31 @@ with tabs[1]:
                         meta_str = f" `{' · '.join(meta_parts)}`" if meta_parts else ""
 
                         btype_icon = {
-                            "text": "📄",
-                            "heading": "📌",
-                            "table": "📊",
-                            "image": "🖼️",
+                            BlockType.TEXT: "📄",
+                            BlockType.IMAGE: "🖼️",
+                            BlockType.TABLE: "📊",
                         }.get(block.block_type, "📄")
 
                         with st.expander(
-                            f"{btype_icon} Block {i} · p{block.page_num}{meta_str}",
+                            f"{btype_icon} Block {i} · p{block.page_number}{meta_str}",
                             expanded=i < 3,
                         ):
                             st.code(block.text, language="text", line_numbers=False)
-                            st.caption(
-                                f"Type: `{block.block_type}` · "
-                                f"Spans: {len(block.spans)} · "
-                                f"BBox: `{block.bbox}`"
-                            )
+                            parts = [
+                                f"Type: `{block.block_type.name}`",
+                                f"Spans: {len(block.spans)}",
+                            ]
+                            if block.style_name:
+                                parts.append(f"Style: `{block.style_name}`")
+                            if block.confidence < 1.0:
+                                parts.append(f"Conf: {block.confidence:.2f}")
+                            if block.bbox.width > 0:
+                                parts.append(f"BBox: ({block.bbox.x0:.0f},{block.bbox.y0:.0f})–"
+                                             f"({block.bbox.x1:.0f},{block.bbox.y1:.0f})")
+                            st.caption(" · ".join(parts))
 
-                    if len(result.blocks) > 30:
-                        st.caption(f"… and {len(result.blocks) - 30} more blocks")
+                    if len(blocks_on_page) > 30:
+                        st.caption(f"… and {len(blocks_on_page) - 30} more blocks on this page")
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 3 – OCR  (placeholder)
