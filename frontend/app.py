@@ -19,6 +19,8 @@ if str(_project_root) not in sys.path:
 
 from ResumeParser.resume_ingestion import FileType, process_upload, UploadResult
 from ResumeParser.extraction import extract_text
+from ResumeParser.OCR import ocr_document
+from ResumeParser.layout import detect_layout
 from ResumeParser.models import BlockType, Document
 
 # ══════════════════════════════════════════════════════════════════════
@@ -346,27 +348,38 @@ with tabs[0]:
     )
 
     if uploaded_file is not None:
-        # Clean up previous temp file before creating a new one
-        old_temp = st.session_state.pop("_temp_file_path", None)
-        if old_temp:
-            Path(old_temp).unlink(missing_ok=True)
+        # Compute a stable signature for the uploaded file so we can detect
+        # when a *new* file is uploaded vs just re-rendering the same one.
+        file_sig = f"{uploaded_file.name}:{uploaded_file.size}"
+        prev_sig = st.session_state.get("_upload_signature")
 
-        # Save to a temp file (keep it alive for downstream tabs)
-        suffix = Path(uploaded_file.name).suffix or ".tmp"
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded_file.getbuffer())
-            tmp_path = tmp.name
+        if file_sig != prev_sig:
+            # ── This is a NEW upload — replace temp file and clear results ──
+            old_temp = st.session_state.pop("_temp_file_path", None)
+            if old_temp:
+                Path(old_temp).unlink(missing_ok=True)
 
-        st.session_state["_temp_file_path"] = tmp_path
+            suffix = Path(uploaded_file.name).suffix or ".tmp"
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(uploaded_file.getbuffer())
+                tmp_path = tmp.name
 
-        with st.spinner("Analyzing file…"):
-            result = process_upload(tmp_path, original_filename=uploaded_file.name)
+            st.session_state["_temp_file_path"] = tmp_path
+            st.session_state["_upload_signature"] = file_sig
 
-        # Store in session state so other tabs can use it
-        st.session_state["upload_result"] = result
-        # Clear any previous downstream results
-        for key in ["extraction_result", "ocr_result", "layout_result", "section_result"]:
-            st.session_state.pop(key, None)
+            with st.spinner("Analyzing file…"):
+                result = process_upload(tmp_path, original_filename=uploaded_file.name)
+
+            st.session_state["upload_result"] = result
+            # Only clear downstream results when a genuinely new file is uploaded
+            for key in ["extraction_result", "ocr_result", "layout_result", "section_result"]:
+                st.session_state.pop(key, None)
+        else:
+            # Same file as before — just retrieve the cached upload result
+            result = st.session_state.get("upload_result")
+            if result is None:
+                st.warning("Upload state is missing — please re-upload the file.")
+                st.stop()
 
         st.divider()
         st.markdown("### 📊 Analysis Result")
@@ -418,7 +431,7 @@ with tabs[0]:
         st.divider()
         st.markdown("### 🧪 Try with sample files")
         st.markdown(
-            "Once **OCR.py**, **layout.py**, and **section.py** "
+            "Once **layout.py**, and **section.py** "
             "are implemented, each tab will show live results step by step."
         )
         _render_pipeline(0)
@@ -576,45 +589,275 @@ with tabs[1]:
                         st.caption(f"… and {len(blocks_on_page) - 30} more blocks on this page")
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB 3 – OCR  (placeholder)
+# TAB 3 – OCR  (fully functional)
 # ══════════════════════════════════════════════════════════════════════
 
 with tabs[2]:
     st.markdown("### 🔍 Optical Character Recognition")
-    _placeholder_tab(
-        title="OCR",
-        description="Handles scanned PDFs and images by converting pages to "
-                    "images, preprocessing them (deskew, binarization, DPI upscaling), "
-                    "and running Tesseract OCR to extract text with coordinates.",
-        features=[
-            "🖼️ **pdf2image** — convert PDF pages to PIL images for OCR",
-            "⚙️ **OpenCV preprocessing** — deskew, binarize (Otsu), upscale to 300+ DPI",
-            "📝 **Tesseract OCR** — extract text with character bounding boxes",
-            "🔄 **PyMuPDF Hybrid OCR** — intelligent fallback: only OCRs pages that need it",
-            "📦 Returns the same **TextBlock** interface as extraction.py",
-        ],
-        filename_hint="OCR.py",
+    st.markdown(
+        "Converts scanned PDFs and images to text using Tesseract OCR with "
+        "OpenCV preprocessing (grayscale, Otsu binarization, deskew)."
     )
 
+    upload = st.session_state.get("upload_result")
+
+    if upload is None:
+        st.info(
+            "👆 Start by uploading a file in the **📤 Upload & Type Detection** tab.",
+            icon="💡",
+        )
+    elif upload.error:
+        st.error(f"Upload failed: **{upload.error}**")
+    elif upload.file_type in (FileType.PDF_DIGITAL, FileType.DOCX):
+        st.info(
+            f"**{upload.file_type.name.replace('_', ' ')}** files don't need OCR "
+            "— they already have selectable text. Use the **📖 Text Extraction** tab instead."
+        )
+        _render_pipeline(2)
+    else:
+        st.markdown(
+            f"**File type:** {upload.file_type.name.replace('_', ' ')}  "
+            f"·  **Pages:** {upload.page_count or '?'}"
+        )
+
+        ocr_btn = st.button(
+            "🔍 Run OCR",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if ocr_btn or "ocr_result" in st.session_state:
+            if ocr_btn:
+                with st.spinner("Running OCR… (this may take a while)"):
+                    result = ocr_document(upload)
+                    st.session_state["ocr_result"] = result
+            else:
+                result = st.session_state["ocr_result"]
+
+            if result.error:
+                st.error(f"**{result.error}**")
+            else:
+                # ── Pipeline ────────────────────────────────────
+                st.divider()
+                st.markdown("### 🔄 Pipeline Position")
+                _render_pipeline(2)
+
+                # ── Stats ───────────────────────────────────────
+                col1, col2, col3, col4 = st.columns(4)
+                all_blocks = [b for p in result.pages for b in p.blocks]
+                _render_stat("Blocks", f"{len(all_blocks)}", col1)
+                _render_stat("Characters", f"{len(result.raw_text):,}", col2)
+                _render_stat("Pages", str(len(result.pages)), col3)
+
+                # Average confidence
+                confs = [b.confidence for p in result.pages for b in p.blocks]
+                avg_conf = (sum(confs) / len(confs) * 100) if confs else 0
+                _render_stat("Avg. Conf.", f"{avg_conf:.0f}%", col4)
+
+                # ── Text + blocks ────────────────────────────────
+                st.divider()
+                c_preview, c_blocks = st.columns([3, 2])
+
+                with c_preview:
+                    st.markdown("#### 📝 OCR Text")
+                    st.text_area(
+                        "OCR output",
+                        result.raw_text[:3000]
+                        + ("\n\n… (truncated)" if len(result.raw_text) > 3000 else ""),
+                        height=400,
+                        label_visibility="collapsed",
+                    )
+
+                with c_blocks:
+                    st.markdown("#### 📦 Blocks by Page")
+                    page_to_show = st.selectbox(
+                        "Page",
+                        options=range(len(result.pages)),
+                        format_func=lambda i: f"Page {i} "
+                        f"({len(result.pages[i].blocks)} blocks)",
+                        label_visibility="collapsed",
+                    )
+
+                    page = result.pages[page_to_show]
+                    blocks_on_page = page.blocks
+
+                    st.markdown(
+                        f"Showing **{min(len(blocks_on_page), 30)}** "
+                        f"of **{len(blocks_on_page)}** blocks."
+                    )
+
+                    for i, block in enumerate(blocks_on_page[:30]):
+                        preview = block.text[:55]
+                        if len(block.text) > 55:
+                            preview += "…"
+
+                        conf_str = f" · conf={block.confidence:.0%}"
+
+                        with st.expander(
+                            f"📄 Block {i} · p{block.page_number}{conf_str}",
+                            expanded=i < 3,
+                        ):
+                            st.code(block.text, language="text", line_numbers=False)
+                            parts = [
+                                f"Confidence: {block.confidence:.0%}",
+                                f"Spans: {len(block.spans)}",
+                            ]
+                            if block.bbox.width > 0:
+                                parts.append(
+                                    f"BBox: ({block.bbox.x0:.0f},{block.bbox.y0:.0f})–"
+                                    f"({block.bbox.x1:.0f},{block.bbox.y1:.0f})"
+                                )
+                            st.caption(" · ".join(parts))
+
+                    if len(blocks_on_page) > 30:
+                        st.caption(
+                            f"… and {len(blocks_on_page) - 30} more blocks"
+                        )
+
 # ══════════════════════════════════════════════════════════════════════
-# TAB 4 – Layout Detection  (placeholder)
+# TAB 4 – Layout Detection  (fully functional)
 # ══════════════════════════════════════════════════════════════════════
 
 with tabs[3]:
     st.markdown("### 📐 Layout Detection")
-    _placeholder_tab(
-        title="Layout Detection",
-        description="Analyzes the spatial arrangement of text blocks to reconstruct "
-                    "the correct reading order, detect multi-column layouts, sidebars, "
-                    "headers, and footers.",
-        features=[
-            "📐 **Column detection** — cluster x-coordinates to find column boundaries",
-            "📖 **Reading order** — left→right within columns, top→bottom across rows",
-            "📌 **Region classification** — identify headers, sidebars, main body, footers",
-            "🗺️ **LayoutRegion** dataclass — ordered regions ready for section parsing",
-        ],
-        filename_hint="layout.py",
+    st.markdown(
+        "Analyses the spatial arrangement of text blocks to detect columns, "
+        "reconstruct reading order, and classify regions."
     )
+
+    # Check which upstream result is available
+    doc = (st.session_state.get("extraction_result")
+           or st.session_state.get("ocr_result"))
+    upload = st.session_state.get("upload_result")
+
+    if upload is None:
+        st.info(
+            "👆 Start by uploading a file in the **📤 Upload & Type Detection** tab,"
+            " then run extraction or OCR first.",
+            icon="💡",
+        )
+    elif doc is None:
+        st.info(
+            "Run **📖 Text Extraction** or **🔍 OCR** first to generate blocks "
+            "for layout analysis.",
+            icon="💡",
+        )
+    elif doc.error:
+        st.error(f"Upstream error: **{doc.error}**")
+    elif not doc.pages or all(len(p.blocks) == 0 for p in doc.pages):
+        st.warning("No blocks found to analyse.")
+    else:
+        layout_btn = st.button(
+            "📐 Analyse Layout",
+            type="primary",
+            use_container_width=True,
+        )
+
+        if layout_btn or "layout_result" in st.session_state:
+            if layout_btn:
+                with st.spinner("Analysing layout…"):
+                    result = detect_layout(doc)
+                    st.session_state["layout_result"] = result
+            else:
+                result = st.session_state["layout_result"]
+
+            if result.error:
+                st.error(f"**{result.error}**")
+            else:
+                # ── Pipeline ────────────────────────────────────
+                st.divider()
+                st.markdown("### 🔄 Pipeline Position")
+                _render_pipeline(3)
+
+                # ── Stats ───────────────────────────────────────
+                all_blocks = [b for p in result.pages for b in p.blocks]
+                col_count = len({b.column_index for b in all_blocks
+                                 if b.column_index is not None})
+
+                col1, col2, col3, col4 = st.columns(4)
+                _render_stat("Blocks", f"{len(all_blocks)}", col1)
+                _render_stat("Pages", str(len(result.pages)), col2)
+                _render_stat("Columns", str(col_count) if col_count > 1 else "1 (single)", col3)
+
+                ordered = sum(1 for b in all_blocks if b.reading_order is not None)
+                _render_stat("Ordered", f"{ordered}/{len(all_blocks)}", col4)
+
+                # ── Visual column layout ─────────────────────────
+                st.divider()
+                c_vis, c_blocks = st.columns([1, 1])
+
+                with c_vis:
+                    st.markdown("#### 📊 Column Overview")
+                    for page in result.pages:
+                        # Group by column
+                        cols: dict[int, list[str]] = {}
+                        for b in page.blocks:
+                            ci = b.column_index or 0
+                            cols.setdefault(ci, []).append(b.text[:40])
+
+                        st.markdown(f"**Page {page.page_number}**")
+                        if len(cols) <= 1:
+                            st.caption("Single column layout")
+                            for _, items in cols.items():
+                                for item in items[:5]:
+                                    st.markdown(f"- {item}…")
+                                if len(items) > 5:
+                                    st.caption(f"  … {len(items) - 5} more")
+                        else:
+                            # Multi-column: display side by side
+                            col_display = st.columns(len(cols))
+                            for (ci, items), col_element in zip(
+                                sorted(cols.items()), col_display
+                            ):
+                                with col_element:
+                                    st.markdown(f"> **Col {ci}** ({len(items)})")
+                                    for item in items[:6]:
+                                        st.caption(f"{item}…")
+
+                with c_blocks:
+                    st.markdown("#### 📦 Reading Order")
+
+                    all_sorted = sorted(
+                        [b for p in result.pages for b in p.blocks
+                         if b.reading_order is not None],
+                        key=lambda b: b.reading_order,
+                    )
+
+                    st.markdown(
+                        f"Showing first **{min(len(all_sorted), 30)}** of "
+                        f"**{len(all_sorted)}** ordered blocks."
+                    )
+
+                    for i, block in enumerate(all_sorted[:30]):
+                        preview = block.text[:50]
+                        if len(block.text) > 50:
+                            preview += "…"
+
+                        region = ""
+                        if block.style_name and "region:" in block.style_name:
+                            r = block.style_name.split("region:")[1].split(" |")[0]
+                            region = f" · `{r}`"
+
+                        with st.expander(
+                            f"#{block.reading_order} · Col {block.column_index} · "
+                            f"p{block.page_number}{region}",
+                            expanded=i < 5,
+                        ):
+                            st.code(block.text, language="text", line_numbers=False)
+                            parts = [
+                                f"Order: #{block.reading_order}",
+                                f"Col: {block.column_index}",
+                                f"Type: {block.block_type.name}",
+                            ]
+                            if block.bbox.width > 0:
+                                parts.append(
+                                    f"Center: ({block.bbox.center_x:.0f},"
+                                    f"{block.bbox.center_y:.0f})"
+                                )
+                            st.caption(" · ".join(parts))
+
+                    if len(all_sorted) > 30:
+                        st.caption(f"… and {len(all_sorted) - 30} more ordered blocks")
 
 # ══════════════════════════════════════════════════════════════════════
 # TAB 5 – Section Parsing  (placeholder)

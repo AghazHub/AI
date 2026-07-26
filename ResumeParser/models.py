@@ -229,6 +229,16 @@ class TextBlock:
     block_id: Optional[int] = None
     """Index of this block on its page (for debugging / ordering references)."""
 
+    column_index: Optional[int] = None
+    """Column index (0-based) assigned by layout analysis. ``None`` before layout runs."""
+
+    reading_order: Optional[int] = None
+    """
+    Global reading order index across the page.
+    Blocks are ordered left-to-right across columns, top-to-bottom within each
+    column. Set by the layout stage; ``None`` before layout runs.
+    """
+
     confidence: float = 1.0
     """Confidence score in ``[0, 1]`` (see :attr:`TextSpan.confidence`)."""
 
